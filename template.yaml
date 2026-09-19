@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AI Fire Drill backend (FastAPI + Mangum)
+
+Parameters:
+  GroqApiKey:
+    Type: String
+    NoEcho: true
+    Description: Groq API key, passed at deploy time, not stored in this file
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+
+Resources:
+  IncidentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ai-fire-drill-incidents
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: incident_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: incident_id
+          KeyType: HASH
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: app.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref IncidentsTable
+          GROQ_API_KEY: !Ref GroqApiKey
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref IncidentsTable }
+      Events:
+        RootApi:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+        ProxyApi:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"

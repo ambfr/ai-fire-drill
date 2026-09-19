@@ -1,0 +1,4 @@
+__pycache__
+.aws-sam
+.venv/
+backend/__pycache__
