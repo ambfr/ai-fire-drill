@@ -1,20 +1,23 @@
 import { useState, useCallback, useRef } from "react";
+import { Flame } from "lucide-react";
 import StatusPanel from "./components/StatusPanel";
 import Timeline from "./components/Timeline";
 import DiagnosisPanel from "./components/DiagnosisPanel";
 import EventStream from "./components/EventStream";
 import { breakProduction, investigate, remediate, verify, resetDemo } from "./api/backend";
 
-// -----------------------------------------------------------------------
-// The whole app is driven by ONE state machine, matching the design doc:
-// HEALTHY -> BREAKING -> INCIDENT -> INVESTIGATING -> DIAGNOSED
-//         -> AWAITING_APPROVAL -> REMEDIATING -> VERIFYING -> RESOLVED
-//
-// Every panel just reads `phase` and renders itself accordingly. Nothing
-// waits on real AWS timing to update the UI — see handleBreak below.
-// -----------------------------------------------------------------------
-
 const initialMetrics = { status: "healthy", version: "v16", error_rate: 0.3, latency_ms: 83 };
+
+const PHASE_LABEL = {
+  HEALTHY: "Idle",
+  BREAKING: "Breaking",
+  INCIDENT: "Incident",
+  INVESTIGATING: "Investigating",
+  AWAITING_APPROVAL: "Awaiting approval",
+  REMEDIATING: "Remediating",
+  VERIFYING: "Verifying",
+  RESOLVED: "Resolved",
+};
 
 export default function App() {
   const [phase, setPhase] = useState("HEALTHY");
@@ -30,9 +33,6 @@ export default function App() {
     setEvents((prev) => [...prev, { time, level, message }]);
   }, []);
 
-  // Advances the visible timeline on its own clock. Per the design doc,
-  // this must NEVER be literally blocked on CloudWatch/EventBridge —
-  // it's a fixed local cadence, independent of the backend call timing.
   const runTimeline = useCallback((onDone) => {
     setTimelineCount(0);
     let step = 1;
@@ -75,9 +75,6 @@ export default function App() {
     beginIncidentFlow(incident_id);
   }, [beginIncidentFlow, log]);
 
-  // Same deterministic path as handleBreak — this is the "FORCE INCIDENT"
-  // fallback the design doc requires in case live AWS timing misbehaves
-  // mid-demo. It reuses the identical pipeline, just without re-calling /break.
   const handleForceIncident = useCallback(() => {
     handleBreak();
   }, [handleBreak]);
@@ -106,40 +103,35 @@ export default function App() {
     setEvents([]);
   }, []);
 
+  const isHealthy = phase === "HEALTHY";
+
   return (
-    <div className="min-h-screen bg-bg px-6 py-8 md:px-12 md:py-10">
-      <header className="mb-8 flex items-baseline justify-between">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-text">AI Fire Drill</h1>
-          <p className="text-xs text-muted font-mono mt-0.5">AWS-native AI Incident Commander</p>
+    <div className="min-h-screen bg-console-field px-6 py-10 md:px-14 md:py-14">
+      <header className="max-w-5xl mx-auto mb-10 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#F87171] to-[#EA580C] flex items-center justify-center shadow-glowRed shrink-0">
+            <Flame size={17} className="text-[#2A0808]" strokeWidth={2.5} />
+          </div>
+          <div>
+            <h1 className="text-[15px] font-semibold tracking-tight text-text leading-none">AI Fire Drill</h1>
+            <p className="text-[11px] text-muted2 font-mono mt-1">AWS-native incident commander</p>
+          </div>
         </div>
-        <span className="text-xs font-mono text-muted">{phase}</span>
+
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/[0.08] bg-white/[0.02]">
+          <span className={`w-1.5 h-1.5 rounded-full ${isHealthy ? "bg-healthy" : "bg-progress"}`} />
+          <span className="text-[11px] font-mono text-muted tracking-wide">{PHASE_LABEL[phase]}</span>
+        </div>
       </header>
 
-      <main className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl mx-auto">
+      <main className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl mx-auto items-start">
         <div className="flex flex-col gap-6">
-          <StatusPanel
-            status={metrics.status}
-            metrics={metrics}
-            phase={phase}
-            onBreak={handleBreak}
-            onForceIncident={handleForceIncident}
-          />
+          <StatusPanel metrics={metrics} phase={phase} onBreak={handleBreak} onForceIncident={handleForceIncident} />
           <Timeline activeCount={timelineCount} running={phase === "INVESTIGATING"} />
         </div>
 
-        <div className="flex flex-col gap-6">
-          <DiagnosisPanel
-            diagnosis={diagnosis}
-            phase={phase}
-            onAuthorize={handleAuthorize}
-            onReset={handleReset}
-          />
-          {!diagnosis && (
-            <div className="border border-dashed border-line rounded-sm p-6 text-sm text-muted font-mono flex items-center justify-center h-full min-h-[160px]">
-              awaiting incident…
-            </div>
-          )}
+        <div className="flex flex-col gap-6 h-full">
+          <DiagnosisPanel diagnosis={diagnosis} phase={phase} onAuthorize={handleAuthorize} onReset={handleReset} />
         </div>
       </main>
 

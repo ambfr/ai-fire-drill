@@ -1,56 +1,61 @@
-export default function StatusPanel({ status, metrics, onBreak, onForceIncident, phase }) {
-  const isHealthy = status === "healthy";
-  const isBroken = status === "broken";
+import { motion } from "framer-motion";
+import { Radio, Gauge, AlertTriangle, GitBranch, Zap } from "lucide-react";
+
+export default function StatusPanel({ metrics, onBreak, onForceIncident, phase }) {
+  const isHealthy = metrics.status === "healthy";
+  const isBroken = metrics.status === "broken";
 
   return (
-    <div className="border border-line bg-panel rounded-sm p-6 flex flex-col gap-6">
+    <div className="glass shadow-panel rounded-2xl p-7 flex flex-col gap-7">
       <div className="flex items-center justify-between">
-        <span className="text-xs tracking-wide text-muted font-mono">PRODUCTION</span>
-        <span className="text-xs text-muted font-mono">payment-api</span>
+        <div className="flex items-center gap-2 text-muted">
+          <Radio size={13} />
+          <span className="text-[11px] tracking-[0.14em] font-mono">PRODUCTION</span>
+        </div>
+        <span className="text-[11px] text-muted2 font-mono">payment-api</span>
       </div>
 
-      <div className="flex items-center gap-3">
-        <span
-          className={`w-2.5 h-2.5 rounded-full ${
-            isHealthy ? "bg-healthy" : "bg-critical animate-blink"
-          }`}
-        />
-        <span
-          className={`text-2xl font-semibold tracking-tight ${
-            isHealthy ? "text-healthy" : "text-critical"
-          }`}
-        >
-          {isHealthy ? "PRODUCTION HEALTHY" : isBroken ? "INCIDENT DETECTED" : "RECOVERING"}
+      <div className="flex items-center gap-4">
+        <div className="relative flex items-center justify-center">
+          <span className={`w-3 h-3 rounded-full ${isHealthy ? "bg-healthy" : "bg-critical"}`} />
+          {!isHealthy && (
+            <span className="absolute w-3 h-3 rounded-full bg-critical animate-pulseRing" />
+          )}
+        </div>
+        <span className={`text-[26px] leading-none font-semibold tracking-tight ${isHealthy ? "text-healthy" : "text-critical"}`}>
+          {isHealthy ? "Production healthy" : isBroken ? "Incident detected" : "Recovering"}
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 font-mono">
-        <Metric label="LATENCY" value={`${metrics.latency_ms} ms`} warn={metrics.latency_ms > 500} />
-        <Metric label="ERROR RATE" value={`${metrics.error_rate}%`} warn={metrics.error_rate > 5} />
-        <Metric label="VERSION" value={metrics.version} />
+      <div className="grid grid-cols-3 gap-3">
+        <Metric icon={Gauge} label="Latency" value={`${metrics.latency_ms}ms`} warn={metrics.latency_ms > 500} />
+        <Metric icon={AlertTriangle} label="Errors" value={`${metrics.error_rate}%`} warn={metrics.error_rate > 5} />
+        <Metric icon={GitBranch} label="Version" value={metrics.version} />
       </div>
 
-      <div className="pt-2">
-        <button
+      <div className="flex flex-col gap-2.5 pt-1">
+        <motion.button
           onClick={onBreak}
           disabled={phase !== "HEALTHY"}
-          className={`w-full py-4 rounded-sm font-semibold text-lg tracking-wide transition
+          whileTap={phase === "HEALTHY" ? { scale: 0.98 } : {}}
+          className={`w-full py-4 rounded-xl font-semibold text-[15px] tracking-tight transition-all flex items-center justify-center gap-2
             ${
               phase === "HEALTHY"
-                ? "bg-critical text-bg hover:brightness-110 active:scale-[0.99]"
-                : "bg-line text-muted cursor-not-allowed"
+                ? "bg-gradient-to-b from-[#FB7B7B] to-[#F04747] text-[#2A0808] shadow-glowRed hover:brightness-105"
+                : "bg-white/5 text-muted2 cursor-not-allowed"
             }`}
         >
-          {phase === "HEALTHY" ? "BREAK PRODUCTION" : "PRODUCTION UNSTABLE"}
-        </button>
+          <Zap size={16} strokeWidth={2.5} />
+          {phase === "HEALTHY" ? "Break production" : "Production unstable"}
+        </motion.button>
 
         {phase === "HEALTHY" && (
           <button
             onClick={onForceIncident}
-            className="mt-2 w-full text-xs text-muted hover:text-text font-mono py-2 transition"
+            className="w-full text-[11px] text-muted2 hover:text-muted font-mono py-1.5 transition-colors"
             title="Deterministic fallback path — bypasses live AWS event timing for the demo"
           >
-            force incident (demo fallback)
+            force incident · demo fallback
           </button>
         )}
       </div>
@@ -58,11 +63,14 @@ export default function StatusPanel({ status, metrics, onBreak, onForceIncident,
   );
 }
 
-function Metric({ label, value, warn }) {
+function Metric({ icon: Icon, label, value, warn }) {
   return (
-    <div className="border border-line rounded-sm px-3 py-2">
-      <div className="text-[10px] text-muted tracking-wide mb-1">{label}</div>
-      <div className={`text-base font-medium ${warn ? "text-critical" : "text-text"}`}>{value}</div>
+    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-3.5 py-3 flex flex-col gap-2">
+      <div className="flex items-center gap-1.5 text-muted2">
+        <Icon size={12} />
+        <span className="text-[10px] tracking-wide">{label}</span>
+      </div>
+      <div className={`font-mono text-[15px] tabular ${warn ? "text-critical" : "text-text"}`}>{value}</div>
     </div>
   );
 }
