@@ -1,29 +1,16 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Flame } from "lucide-react";
-import StatusPanel from "./components/StatusPanel";
+import RepoForm from "./components/RepoForm";
 import Timeline from "./components/Timeline";
-import DiagnosisPanel from "./components/DiagnosisPanel";
+import ResultPanel from "./components/ResultPanel";
 import EventStream from "./components/EventStream";
-import { breakProduction, investigate, remediate, verify, resetDemo } from "./api/backend";
+import { getStatus, analyzeRepo } from "./api/backend";
 
-const initialMetrics = { status: "healthy", version: "v16", error_rate: 0.3, latency_ms: 83 };
-
-const PHASE_LABEL = {
-  HEALTHY: "Idle",
-  BREAKING: "Breaking",
-  INCIDENT: "Incident",
-  INVESTIGATING: "Investigating",
-  AWAITING_APPROVAL: "Awaiting approval",
-  REMEDIATING: "Remediating",
-  VERIFYING: "Verifying",
-  RESOLVED: "Resolved",
-};
+const TIMELINE_STEPS = 6;
 
 export default function App() {
-  const [phase, setPhase] = useState("HEALTHY");
-  const [metrics, setMetrics] = useState(initialMetrics);
-  const [incidentId, setIncidentId] = useState(null);
-  const [diagnosis, setDiagnosis] = useState(null);
+  const [phase, setPhase] = useState("IDLE"); // IDLE | ANALYZING | REPORT | ERROR
+  const [result, setResult] = useState(null);
   const [timelineCount, setTimelineCount] = useState(-1);
   const [events, setEvents] = useState([]);
   const timelineTimer = useRef(null);
@@ -33,77 +20,89 @@ export default function App() {
     setEvents((prev) => [...prev, { time, level, message }]);
   }, []);
 
+  // The analysis is already complete when the timeline runs (the backend
+  // returns everything synchronously) — the steps animate on a local clock
+  // while the report is revealed as each step "completes".
   const runTimeline = useCallback((onDone) => {
     setTimelineCount(0);
     let step = 1;
     timelineTimer.current = setInterval(() => {
       setTimelineCount(step);
       step += 1;
-      if (step > 6) {
+      if (step > TIMELINE_STEPS) {
         clearInterval(timelineTimer.current);
         onDone?.();
       }
     }, 420);
   }, []);
 
-  const beginIncidentFlow = useCallback(
-    async (id) => {
-      setPhase("INCIDENT");
-      log("ERROR", `Incident ${id} created — payment-api reporting elevated errors`);
+  // Reachability check on first load.
+  useEffect(() => {
+    getStatus()
+      .then(() => log("OK", "Backend connected — fire drill service ready"))
+      .catch((err) => log("ERROR", `Backend unreachable: ${err.message}`));
+  }, [log]);
 
-      setPhase("INVESTIGATING");
-      log("INFO", "EventBridge published ProductionIncident event");
-      log("INFO", "Investigation Lambda invoked");
+  const handleAnalyze = useCallback(
+    async ({ repoUrl, branch, healthUrl }) => {
+      setPhase("ANALYZING");
+      setResult(null);
+      setTimelineCount(-1);
+      log("INFO", `Fire drill started — ${repoUrl} (branch: ${branch})`);
+      if (healthUrl) log("INFO", `Health endpoint attached: ${healthUrl}`);
+      log("INFO", "Fetching commit history from GitHub…");
 
-      runTimeline(async () => {
-        log("INFO", "Evidence package sent to Bedrock");
-        const result = await investigate(id);
-        setDiagnosis(result);
-        log("OK", `Root cause identified (confidence ${Math.round(result.confidence * 100)}%)`);
-        setPhase("AWAITING_APPROVAL");
-      });
+      const started = Date.now();
+      try {
+        const data = await analyzeRepo({ repoUrl, branch, healthUrl });
+        log(
+          "OK",
+          `Analysis complete in ${((Date.now() - started) / 1000).toFixed(1)}s — head ${data.commit.short}` +
+            (data.previous_commit ? ` vs ${data.previous_commit.short}` : "")
+        );
+
+        if (data.ci.state === "failure") {
+          log("ERROR", `CI checks failed on ${data.commit.short} (${data.ci.failing_checks.length} failing)`);
+        } else if (data.ci.state === "success") {
+          log("OK", `CI checks passed on ${data.commit.short} (${data.ci.total_checks} checks)`);
+        } else {
+          log("INFO", "No CI verdict available for the head commit");
+        }
+        if (data.health) {
+          log(data.health.ok ? "OK" : "ERROR",
+              `Health check ${data.health.ok ? "passed" : "failed"} (HTTP ${data.health.status_code ?? "n/a"}, ${data.health.latency_ms}ms)`);
+        }
+        log("INFO", `Diff analyzed: ${data.changed_files.length} changed file(s)`);
+        log("INFO", "Generating WHAT / WHY / HOW from the evidence…");
+
+        // Reveal the report as the investigation timeline "walks through" it.
+        runTimeline(() => {
+          if (data.regression_detected) {
+            log("ERROR", `Regression confirmed (confidence ${Math.round(data.analysis.confidence * 100)}%)`);
+          } else {
+            log("OK", `No regression — ${data.commit.short} looks healthy`);
+          }
+          setResult(data);
+          setPhase("REPORT");
+        });
+      } catch (err) {
+        log("ERROR", `Fire drill failed: ${err.message}`);
+        setResult({ message: err.message });
+        setPhase("ERROR");
+      }
     },
     [log, runTimeline]
   );
 
-  const handleBreak = useCallback(async () => {
-    setPhase("BREAKING");
-    const { incident_id } = await breakProduction();
-    setIncidentId(incident_id);
-    setMetrics((m) => ({ ...m, status: "broken", version: "v17", error_rate: 17.8, latency_ms: 1842 }));
-    log("ERROR", "Deployment v17 detected — malformed database query in logs");
-    beginIncidentFlow(incident_id);
-  }, [beginIncidentFlow, log]);
-
-  const handleForceIncident = useCallback(() => {
-    handleBreak();
-  }, [handleBreak]);
-
-  const handleAuthorize = useCallback(async () => {
-    setPhase("REMEDIATING");
-    log("INFO", "Rollback authorized by operator");
-    await remediate(incidentId, diagnosis.target_version);
-    log("OK", `Rolling back to ${diagnosis.target_version}`);
-
-    setPhase("VERIFYING");
-    log("INFO", "Verifying recovery…");
-    const result = await verify();
-    setMetrics((m) => ({ ...m, ...result }));
-    log("OK", `Recovery verified — error rate ${result.error_rate}%, latency ${result.latency_ms}ms`);
-    setPhase("RESOLVED");
-  }, [diagnosis, incidentId, log]);
-
-  const handleReset = useCallback(async () => {
-    await resetDemo();
-    setPhase("HEALTHY");
-    setMetrics(initialMetrics);
-    setIncidentId(null);
-    setDiagnosis(null);
+  const handleReset = useCallback(() => {
+    if (timelineTimer.current) clearInterval(timelineTimer.current);
+    setPhase("IDLE");
+    setResult(null);
     setTimelineCount(-1);
     setEvents([]);
   }, []);
 
-  const isHealthy = phase === "HEALTHY";
+  const running = phase === "ANALYZING";
 
   return (
     <div className="min-h-screen bg-console-field px-6 py-10 md:px-14 md:py-14">
@@ -114,24 +113,26 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-[15px] font-semibold tracking-tight text-text leading-none">AI Fire Drill</h1>
-            <p className="text-[11px] text-muted2 font-mono mt-1">AWS-native incident commander</p>
+            <p className="text-[11px] text-muted2 font-mono mt-1">commit regression analyzer</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/[0.08] bg-white/[0.02]">
-          <span className={`w-1.5 h-1.5 rounded-full ${isHealthy ? "bg-healthy" : "bg-progress"}`} />
-          <span className="text-[11px] font-mono text-muted tracking-wide">{PHASE_LABEL[phase]}</span>
+          <span className={`w-1.5 h-1.5 rounded-full ${running ? "bg-progress animate-blink" : phase === "REPORT" ? "bg-healthy" : "bg-muted2"}`} />
+          <span className="text-[11px] font-mono text-muted tracking-wide">
+            {phase === "IDLE" ? "Ready" : phase === "ANALYZING" ? "Analyzing" : phase === "REPORT" ? (result?.regression_detected ? "Regression" : "Healthy") : "Failed"}
+          </span>
         </div>
       </header>
 
       <main className="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl mx-auto items-start">
         <div className="flex flex-col gap-6">
-          <StatusPanel metrics={metrics} phase={phase} onBreak={handleBreak} onForceIncident={handleForceIncident} />
-          <Timeline activeCount={timelineCount} running={phase === "INVESTIGATING"} />
+          <RepoForm onSubmit={handleAnalyze} running={running} />
+          <Timeline activeCount={timelineCount} running={running} />
         </div>
 
         <div className="flex flex-col gap-6 h-full">
-          <DiagnosisPanel diagnosis={diagnosis} phase={phase} onAuthorize={handleAuthorize} onReset={handleReset} />
+          <ResultPanel result={result} phase={phase} onReset={handleReset} />
         </div>
       </main>
 

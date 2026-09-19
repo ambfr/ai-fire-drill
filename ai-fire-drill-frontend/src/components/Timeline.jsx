@@ -2,12 +2,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Check, ListChecks } from "lucide-react";
 
 const STEPS = [
-  "Incident detected",
-  "Application logs collected",
-  "Deployment checked",
-  "Database checked",
-  "Errors correlated",
-  "Root cause identified",
+  "Commit history fetched",
+  "CI checks evaluated",
+  "Baseline commit identified",
+  "Diff analyzed",
+  "Health check verified",
+  "Report generated",
 ];
 
 export default function Timeline({ activeCount, running }) {

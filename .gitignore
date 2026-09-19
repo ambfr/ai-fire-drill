@@ -2,3 +2,6 @@ __pycache__
 .aws-sam
 .venv/
 backend/__pycache__
+ai-fire-drill-frontend/.env
+ai-fire-drill-frontend/node_modules/
+backend/.env

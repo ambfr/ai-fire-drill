@@ -2,3 +2,5 @@ fastapi
 mangum
 requests
 boto3
+pydantic
+python-dotenv

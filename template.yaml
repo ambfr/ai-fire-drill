@@ -1,24 +1,29 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: AI Fire Drill backend (FastAPI + Mangum)
+Description: AI Fire Drill — commit regression analyzer backend (FastAPI + Mangum)
 
 Parameters:
   GroqApiKey:
     Type: String
     NoEcho: true
     Description: Groq API key, passed at deploy time, not stored in this file
+  GithubToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Optional GitHub token for higher API rate limits and private repos
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 30
-    MemorySize: 256
+    Timeout: 120
+    MemorySize: 512
 
 Resources:
-  IncidentsTable:
+  AnalysesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: ai-fire-drill-incidents
+      TableName: ai-fire-drill-analyses
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: incident_id
@@ -34,10 +39,11 @@ Resources:
       Handler: app.handler
       Environment:
         Variables:
-          TABLE_NAME: !Ref IncidentsTable
+          TABLE_NAME: !Ref AnalysesTable
           GROQ_API_KEY: !Ref GroqApiKey
+          GITHUB_TOKEN: !Ref GithubToken
       Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref IncidentsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AnalysesTable }
       Events:
         RootApi:
           Type: Api

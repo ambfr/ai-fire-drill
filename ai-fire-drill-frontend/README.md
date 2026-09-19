@@ -1,51 +1,124 @@
-# AI Fire Drill — Frontend
+# AI Fire Drill — Commit Regression Analyzer
 
-Mission-control style dashboard for the AI Fire Drill hackathon project.
-Built with Vite + React + Tailwind.
+> **"Your latest push broke the application. Here's the change that caused it,
+> why it caused the failure, the evidence, and how to fix it."**
 
-## Setup
+AI Fire Drill takes a GitHub repository, inspects the newest commit against the
+last known-good commit, gathers evidence (code diff, CI check results, optional
+health endpoint), and produces a **WHAT changed / WHY it broke / HOW to fix it**
+report — strictly from that evidence. Nothing is broken on purpose, nothing is
+invented.
+
+## What it does
+
+```text
+Working application
+      ↓
+New GitHub commit
+      ↓
+AI Fire Drill checks the new commit
+      ↓
+Compare previous working commit vs new commit
+      ↓
+Check tests (CI) / provided health endpoint
+      ↓
+If regression detected:
+      ↓
+WHAT changed? · WHY did it break? · HOW to fix it?
+```
+
+- **Primary evidence**: GitHub commit history, the commit diff, CI check-runs
+- **Supporting evidence**: an optional deployed health URL (HTTP status + latency)
+- **No fake metrics**: v16/v17, error_rate/latency dashboards, `/break`,
+  rollback flows — all removed
+
+## Repository layout
+
+```
+backend/                  FastAPI + Mangum Lambda (commit regression analyzer)
+template.yaml             SAM template (API Gateway + Lambda + DynamoDB)
+verify_backend.py         Local test suite — no AWS or network required
+ai-fire-drill-frontend/   Vite + React mission-control UI
+```
+
+## Backend
+
+Endpoints:
+
+| Method | Path         | Purpose                                            |
+|--------|--------------|----------------------------------------------------|
+| GET    | `/status`    | Service info / reachability check                  |
+| POST   | `/analyze`   | Run the full fire drill for `repo_url` (+ branch)  |
+| GET    | `/analyses`  | Recent analysis history (top 10)                   |
+
+`POST /analyze` request:
+
+```json
+{
+  "repo_url": "https://github.com/owner/repo",
+  "branch": "main",
+  "health_url": "https://your-app.example.com/health"
+}
+```
+
+Response highlights: `regression_detected`, `commit`, `previous_commit`
+(with `verified` flag), `ci` (failing check names + titles), `health`,
+`changed_files` (with patches), and `analysis` containing `what_changed`,
+`what_broke`, `why`, `evidence[]`, `how_to_fix`, `confidence`.
+
+Verdict logic (deterministic, the model cannot override it):
+
+- Head commit CI **failed** → regression
+- Head commit CI **passed** → no regression
+- **No CI** → health check decides; with neither, the report says honestly
+  that nothing could be verified (and says so via `caveats`)
+- Baseline = newest older commit whose CI passes; if none exists, the direct
+  parent is used and flagged as unverified
+
+The AI (Groq) only explains the evidence — its system prompt forbids
+inventing logs, metrics, or causes. If Groq is unavailable, the API returns an
+evidence-only summary assembled from the collected data, never a fabricated
+root cause.
+
+Environment variables: `TABLE_NAME`, `GROQ_API_KEY`, `GROQ_MODEL`,
+`GROQ_FALLBACK_MODELS`, `GITHUB_TOKEN` (optional — higher rate limits and
+private repos), `GITHUB_TIMEOUT_S`, `GROQ_TIMEOUT_S`, `HEALTH_TIMEOUT_S`.
+
+## Frontend
 
 ```bash
+cd ai-fire-drill-frontend
 npm install
 npm run dev
 ```
 
-Opens at http://localhost:5173
+Set the backend URL in `ai-fire-drill-frontend/.env`:
 
-## How this is structured
+```
+VITE_API_BASE_URL=https://your-api.execute-api.region.amazonaws.com/Prod
+```
 
-- `src/App.jsx` — the whole app is driven by ONE state machine:
-  `HEALTHY → BREAKING → INCIDENT → INVESTIGATING → DIAGNOSED →
-  AWAITING_APPROVAL → REMEDIATING → VERIFYING → RESOLVED`
-  Every component just reads `phase` and renders accordingly.
+Structure:
 
-- `src/api/backend.js` — the ONLY file that knows whether you're talking
-  to the real AWS API or the in-browser mock. Right now `USE_MOCK = true`
-  at the top of that file, so the whole demo runs with zero backend.
+- `src/api/backend.js` — the only file that talks to the API
+- `src/components/RepoForm.jsx` — repo URL + branch + optional health URL,
+  **Analyze Latest Commit · Run Fire Drill** button
+- `src/components/Timeline.jsx` — 6-step investigation checklist
+- `src/components/ResultPanel.jsx` — verdict header (commit / previous commit /
+  confidence), WHAT CHANGED / WHAT BROKE / WHY / EVIDENCE / HOW TO FIX,
+  caveats, failing-check links
+- `src/components/EventStream.jsx` — terminal-style event log
 
-  **When Dev A's API Gateway URL is ready:**
-  1. Set `API_BASE_URL` in `backend.js` to the real endpoint
-  2. Flip `USE_MOCK` to `false`
-  3. Nothing else in the app changes — every component already calls
-     `breakProduction()`, `investigate()`, `remediate()`, `verify()`,
-     `resetDemo()` instead of touching fetch directly.
+## Local verification (nothing is deployed)
 
-- `src/components/`
-  - `StatusPanel.jsx` — health badge, metrics, BREAK PRODUCTION button,
-    and the hidden "force incident" fallback the design doc requires
-    (in case live AWS timing misbehaves mid-demo)
-  - `Timeline.jsx` — the 6-step investigation checklist, animated on its
-    own fixed local clock (never blocked on real backend timing, per
-    the design doc's determinism requirement)
-  - `DiagnosisPanel.jsx` — root cause, confidence bar, evidence list,
-    AUTHORIZE ROLLBACK button, resolved state + reset
-  - `EventStream.jsx` — terminal-style scrolling event log
+```bash
+# Backend tests (mocks GitHub, Groq, health endpoint, DynamoDB)
+.venv/Scripts/python.exe verify_backend.py
 
-## Demo flow
+# SAM template validation + build
+sam validate
+sam build
 
-1. Click **BREAK PRODUCTION** → status flips, timeline starts running
-2. Timeline completes → diagnosis panel populates with root cause + evidence
-3. Click **AUTHORIZE ROLLBACK** → remediating → verifying → resolved
-4. Click **reset demo** to run it again
-
-Matches the ~90 second demo script in the design doc (section 34).
+# Frontend
+cd ai-fire-drill-frontend && npm run lint && npm run build
+```
