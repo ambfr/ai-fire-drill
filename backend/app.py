@@ -748,9 +748,12 @@ def analyze(body: AnalyzeRequest):
     analysis_id = f"AN-{uuid.uuid4().hex[:8]}"
 
     # 8. Persist the analysis (Decimal-safe at every level).
+    # The deployed table's partition key is `incident_id`; keep storing new
+    # analysis rows in the same table by mirroring the key attribute.
     item = to_dynamodb(
         {
             "analysis_id": analysis_id,
+            "incident_id": analysis_id,
             "created_at": _now(),
             "repo": full_name,
             "branch": branch,

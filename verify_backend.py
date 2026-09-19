@@ -327,7 +327,10 @@ check("groq called once", len(groq_calls) == 1, f"calls={len(groq_calls)}")
 url, kwargs = groq_calls[0]
 check_eq("groq endpoint is OpenAI-compatible chat completions", url, backend.GROQ_URL)
 check_eq("groq Authorization header from env", kwargs["headers"]["Authorization"], "Bearer local-test-key")
-check_eq("groq model is llama-3.3-70b-versatile", kwargs["json"]["model"], "llama-3.3-70b-versatile")
+check_eq("groq model matches configured GROQ_MODEL", kwargs["json"]["model"], backend.GROQ_MODEL)
+check("groq model default is a documented Groq model",
+      backend.GROQ_MODEL in ("llama-3.3-70b-versatile", "openai/gpt-oss-120b", "llama-3.1-8b-instant"),
+      backend.GROQ_MODEL)
 check("groq request body has messages list", isinstance(kwargs["json"].get("messages"), list) and kwargs["json"]["messages"])
 check("groq request asks for JSON object response", kwargs["json"].get("response_format") == {"type": "json_object"})
 check("groq timeout configured", kwargs["timeout"] == backend.GROQ_TIMEOUT_S)

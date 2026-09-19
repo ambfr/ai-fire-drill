@@ -12,6 +12,14 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: Optional GitHub token for higher API rate limits and private repos
+  GroqModel:
+    Type: String
+    Default: openai/gpt-oss-120b
+    AllowedValues:
+      - openai/gpt-oss-120b
+      - llama-3.3-70b-versatile
+      - llama-3.1-8b-instant
+    Description: Groq model used for the regression analysis (non-secret)
 
 Globals:
   Function:
@@ -20,10 +28,10 @@ Globals:
     MemorySize: 512
 
 Resources:
-  AnalysesTable:
+  IncidentsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: ai-fire-drill-analyses
+      TableName: ai-fire-drill-incidents
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: incident_id
@@ -39,11 +47,12 @@ Resources:
       Handler: app.handler
       Environment:
         Variables:
-          TABLE_NAME: !Ref AnalysesTable
+          TABLE_NAME: !Ref IncidentsTable
           GROQ_API_KEY: !Ref GroqApiKey
+          GROQ_MODEL: !Ref GroqModel
           GITHUB_TOKEN: !Ref GithubToken
       Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref AnalysesTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref IncidentsTable }
       Events:
         RootApi:
           Type: Api
