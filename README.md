@@ -1,172 +1,187 @@
-# AI Fire Drill — Commit Regression Analyzer
+# AI Fire Drill
 
-> **"Your latest push broke the application. Here's the change that caused it,
-> why it caused the failure, the evidence, and how to fix it."**
+## Evidence-first commit regression analysis
 
-AI Fire Drill takes a GitHub repository, inspects the newest commit against the
-last known-good commit, gathers evidence (code diff, CI check results, optional
-health endpoint), and produces a **WHAT changed / WHY it broke / HOW to fix it**
-report — strictly from that evidence. It is **not** a website uptime monitor and
-**not** a tool that breaks anything: the app under test is never touched.
+AI Fire Drill investigates whether the newest commit on a GitHub branch caused
+a regression. It compares that commit with the most recent known-good commit,
+collects CI and optional health-check evidence, and produces a report answering:
 
-## Core Flow
+**What changed? Why did it break? How should it be fixed?**
 
-```text
-Working application
-      ↓
-New GitHub commit
-      ↓
-AI Fire Drill detects/checks the new commit
-      ↓
-Compare previous working commit vs new commit
-      ↓
-Check tests (CI) / provided health endpoint
-      ↓
-If regression detected:
-      ↓
-WHAT changed? · WHY did it break? · HOW to fix it?
-```
+The application under investigation is never modified. AI Fire Drill is not an
+uptime monitor and does not simulate outages, fake metrics, or rollback flows.
 
-- **Primary evidence**: GitHub commit history, the commit diff, CI check-runs
-- **Supporting evidence**: an optional deployed health URL (HTTP status + latency)
-- **No fake production**: no `/break`, no v16/v17, no fake error_rate/latency,
-  no rollback scenario, no "break production" button
+## How it works
 
-## How It Works
+1. Enter a GitHub repository, branch, and optional deployed health URL.
+2. The backend reads recent commits and evaluates GitHub check-runs, falling
+       back to commit statuses when check-runs are unavailable.
+3. The newest commit becomes the head. The newest older commit with passing CI
+       becomes the baseline; otherwise the direct parent is used and marked
+       unverified.
+4. The GitHub compare API supplies the changed files and patches.
+5. The optional health URL is checked once as supporting evidence.
+6. Code computes the regression verdict deterministically. Groq explains the
+       collected evidence but cannot override that verdict.
+7. The result is saved to DynamoDB and displayed in the React interface.
 
-1. The user enters a GitHub repo URL (branch defaults to `main`) and an optional
-   deployed health URL, then clicks **Analyze Latest Commit · Run Fire Drill**.
-2. `POST /analyze` lists recent commits on the branch via the GitHub API.
-3. CI is evaluated per commit (GitHub check-runs, falling back to commit statuses).
-4. **Head** = newest commit. **Baseline** = newest older commit whose CI passes
-   (falls back to the direct parent, flagged unverified).
-5. The diff between baseline and head is fetched (GitHub compare API).
-6. The health URL (if provided) is probed once — supporting evidence only.
-7. Verdict is deterministic: failing CI (or failing health) ⇒ regression;
-   passing CI ⇒ clean; no CI and no health URL ⇒ honest "nothing verified".
-8. The evidence (diff, failing checks, health result) goes to **Groq**, which
-   returns `what_changed` / `what_broke` / `why` / `evidence` / `how_to_fix` /
-   `confidence`. Its system prompt forbids inventing logs, metrics, or causes.
-9. The analysis is stored in DynamoDB and returned; the frontend renders the
-   report above.
+If there is no CI and no health URL, the service reports that nothing could be
+verified instead of guessing. If Groq is unavailable, the API returns an
+evidence-only summary.
 
 ## Architecture
 
+```text
+React + Vite
+            |
+            v
+API Gateway -> AWS Lambda (FastAPI + Mangum)
+                                                      |-> GitHub REST API
+                                                      |-> Groq chat completions
+                                                      `-> DynamoDB (analysis history)
 ```
-React Frontend → API Gateway → Lambda (FastAPI + Mangum)
-                                  ├── GitHub REST API (commits, compare, check-runs)
-                                  ├── Groq chat completions (WHAT/WHY/HOW report)
-                                  └── DynamoDB (analysis history)
+
+### Stack
+
+- Frontend: React 19, Vite, Tailwind CSS, Framer Motion, Lucide
+- Backend: Python 3.12, FastAPI, Mangum, Requests, Boto3
+- Infrastructure: AWS SAM, API Gateway, Lambda, DynamoDB
+- AI: Groq OpenAI-compatible chat completions
+
+## Repository layout
+
+```text
+.
+├── backend/
+│   ├── app.py                 # FastAPI application and analysis workflow
+│   └── requirements.txt       # Lambda/runtime dependencies
+├── ai-fire-drill-frontend/
+│   ├── src/
+│   │   ├── App.jsx            # UI state machine and analysis flow
+│   │   ├── api/backend.js     # frontend/backend API client
+│   │   └── components/        # form, timeline, report, and event stream
+│   ├── package.json
+│   └── .env.example           # create locally if needed
+├── template.yaml              # SAM infrastructure definition
+├── samconfig.toml             # default SAM deployment configuration
+└── verify_backend.py          # fully mocked backend verification suite
 ```
 
-Reused from the previous version: AWS API Gateway, Lambda/FastAPI, DynamoDB,
-the Groq integration, and the existing frontend structure. No new AWS services.
+## API
 
-## AWS Services Used
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/status` | Service information and reachability check |
+| `POST` | `/analyze` | Analyze the latest commit on a branch |
+| `GET` | `/analyses` | Return recent saved analyses |
 
-| Service | Purpose |
-|---|---|
-| AWS Lambda | `POST /analyze` — GitHub + Groq + DynamoDB orchestration |
-| API Gateway | Exposes the backend to the frontend |
-| DynamoDB | Stores analysis history |
-| Groq | Evidence-only regression report (OpenAI-compatible API) |
-
-All serverless/pay-per-request — no EC2, RDS, OpenSearch, or SageMaker.
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/status` | Service info / reachability check |
-| POST | `/analyze` | Run the fire drill for `repo_url` (+ branch, health_url) |
-| GET | `/analyses` | Recent analysis history (top 10) |
-
-`POST /analyze` request:
+Example request:
 
 ```json
 {
-  "repo_url": "https://github.com/owner/repo",
-  "branch": "main",
-  "health_url": "https://your-app.example.com/health"
+      "repo_url": "https://github.com/owner/repo",
+      "branch": "main",
+      "health_url": "https://your-app.example.com/health"
 }
 ```
 
-Response highlights: `analysis_id`, `regression_detected`, `repo`, `commit`,
-`previous_commit` (with `verified` flag), `ci` (failing check names/titles),
-`health`, `changed_files` (with patches), `analysis` (`what_changed`,
-`what_broke`, `why`, `evidence[]`, `how_to_fix`, `confidence`), `caveats[]`.
+`health_url` is optional. The response includes the head and baseline commits,
+CI state and failing checks, health-check results, changed files, caveats, and
+an `analysis` object with `what_changed`, `what_broke`, `why`, `evidence`,
+`how_to_fix`, and `confidence`.
 
-## Tech Stack
-
-- **Frontend:** Vite + React (dark "mission control" UI, terminal-style event stream)
-- **Backend:** Python 3.12 Lambda, FastAPI + Mangum, AWS SAM (`template.yaml`)
-- **AI:** Groq (`llama-3.3-70b-versatile` with configured fallback models)
-- **Data:** DynamoDB single table (`ai-fire-drill-analyses`)
-
-## Project Structure
-
-```
-ai-fire-drill/
-├── backend/
-│   ├── app.py              # FastAPI app: /status, /analyze, /analyses
-│   └── requirements.txt
-├── ai-fire-drill-frontend/
-│   ├── src/
-│   │   ├── App.jsx         # IDLE → ANALYZING → REPORT/ERROR state machine
-│   │   ├── api/backend.js  # the only file that talks to the API
-│   │   └── components/     # RepoForm, Timeline, ResultPanel, EventStream
-│   └── .env                # VITE_API_BASE_URL
-├── template.yaml           # SAM template (API Gateway + Lambda + DynamoDB)
-├── verify_backend.py       # local test suite (mocks GitHub/Groq/DynamoDB)
-└── samconfig.toml
-```
-
-## Setup
+## Local development
 
 ### Prerequisites
 
-- AWS account + AWS CLI configured
-- AWS SAM CLI installed
-- Node.js (for the frontend)
-- A Groq API key (`GROQ_API_KEY`); optionally a GitHub token for private repos
+- Python 3.12
+- Node.js and npm
+- AWS SAM CLI for template validation and deployment
+- AWS credentials configured for deployment
+- A Groq API key for live analysis
+- A GitHub token is optional, but recommended for private repositories and API
+      rate limits
 
-### Local verification (nothing is deployed)
+### Backend verification
+
+The verification suite does not call AWS, GitHub, a health endpoint, or Groq.
+It replaces those services with local mocks and exercises the analysis flow.
 
 ```bash
-# Backend tests — mock GitHub, Groq, health endpoint, DynamoDB
-.venv/Scripts/python.exe verify_backend.py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r backend/requirements.txt
+python verify_backend.py
+```
 
-# SAM template validation + build
+### Validate and build the SAM application
+
+```bash
 sam validate
 sam build
+```
 
-# Frontend lint + build
+### Run the frontend
+
+```bash
 cd ai-fire-drill-frontend
+npm install
+npm run dev
+```
+
+The frontend uses the deployed API URL by default. To point it at another
+backend, create `ai-fire-drill-frontend/.env`:
+
+```dotenv
+VITE_API_BASE_URL=https://your-api.execute-api.ap-south-1.amazonaws.com/Prod
+```
+
+Useful frontend checks:
+
+```bash
 npm run lint
 npm run build
 ```
 
-### Deploy (when ready)
+## Deployment
+
+The SAM template provisions an API Gateway endpoint, a Python 3.12 Lambda, and
+the `ai-fire-drill-incidents` DynamoDB table. Deploy interactively:
 
 ```bash
 sam build
-sam deploy --guided   # prompts for GROQ_API_KEY and optional GITHUB_TOKEN
-
-cd ai-fire-drill-frontend
-# put the deployed API URL into .env as VITE_API_BASE_URL
-npm run dev
+sam deploy --guided
 ```
 
-## Honesty Model
+When prompted, provide `GroqApiKey`. `GithubToken` is optional. The deployed
+API URL is printed as the `ApiUrl` stack output; set that URL in the frontend's
+`VITE_API_BASE_URL` before running the UI.
 
-The AI never invents evidence:
+The default region in `samconfig.toml` is `ap-south-1`. Change it in that file
+or pass `--region` if the deployment should use another region.
 
-- The system prompt requires the model to base every statement on the provided
-  diff/CI/health evidence and to say so explicitly when evidence is insufficient.
-- The regression verdict is computed deterministically in code — the model
-  cannot override it.
-- If Groq is unreachable, the API returns an evidence-only summary (failing
-  checks, changed files, health result) and states that no root cause was
-  inferred.
-- If a repo has no CI and no health URL, the report says that nothing could be
-  verified instead of guessing.
+## Configuration
+
+Lambda configuration is supplied through the SAM template or environment:
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `GROQ_API_KEY` | Yes for AI explanations | Groq API key |
+| `GITHUB_TOKEN` | No | Private-repository access and higher rate limits |
+| `GROQ_MODEL` | No | Primary Groq model; defaults to `openai/gpt-oss-120b` in SAM |
+| `GROQ_FALLBACK_MODELS` | No | Comma-separated fallback models |
+| `TABLE_NAME` | No | DynamoDB table name |
+| `GITHUB_TIMEOUT_S` | No | GitHub request timeout |
+| `GROQ_TIMEOUT_S` | No | Groq request timeout |
+| `HEALTH_TIMEOUT_S` | No | Health URL timeout |
+
+Do not commit `.env` files or API keys. The SAM parameters marked `NoEcho` are
+passed to CloudFormation without being displayed in deployment output.
+
+## Limitations
+
+- Analysis depends on the GitHub API and the repository's available CI data.
+- A health URL is supporting evidence only; it does not replace commit-level CI.
+- Large diffs are truncated before being sent to Groq and stored.
+- Public repositories can be analyzed without a token; private repositories
+       require `GITHUB_TOKEN`.
